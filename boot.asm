@@ -30,44 +30,54 @@ gdt_descriptor:
     dw gdt_end - gdt_start - 1
     dd gdt_start
 
-ALIGN 4
-start_pm:
-    ; Set up the data segment
-    mov ax, 0x10
+section .text
+
+    ; Clear the screen
+    xor ax, ax
     mov ds, ax
     mov es, ax
+    mov si, welcome_message
+    call print_string
 
-    ; Load the program from floppy
-    mov ax, 0x0201   ; Read one sector from floppy
-    mov ebx, program_buffer  ; Destination buffer address
-    mov dl, 0x00     ; Drive number: floppy A
-    mov dh, 0x00     ; Head number: 0
-    mov cx, 0x0002   ; Sector number: 2
-    mov ah, 0x02     ; BIOS disk function
-    int 0x13         ; Call the BIOS to read the sector
-
-    ; Jump to the program's entry point
-    jmp program_entry
-
-; Buffer to store the program code
-program_buffer:
-    TIMES 65536 db 0
-
-; Program entry point in protected mode
-program_entry:
-    ; Set up the stack and data segments
-    mov ax, 0x18     ; Data segment selector
-    mov ds, ax
-    mov ss, ax
-    mov esp, 0x40000 ; Set the stack pointer to the top of the buffer
-
-    ; Call the program's main function
-    call dword [program_main]
-
-    ; Halt the CPU
+    ; Enable protected mode
     cli
-    hlt
+    lgdt [gdt_descriptor]
+    mov eax, cr0
+    or eax, 0x1
+    mov cr0, eax
+    jmp CODE_SEG:init_pm
 
-; Address of the program's main function
-program_main:
-    dd 0x00008000  ; Assume the program starts at address 0x0000:0x8000
+init_pm:
+    mov ax, DATA_SEG
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov sp, 0x9000
+    jmp start_pm
+
+start_pm:
+    mov si, pm_message
+    call print_string
+    jmp $
+
+print_string:
+    lodsb
+    or al, al
+    jz .done
+    mov ah, 0x0E ; BIOS teletype function
+    int 0x10     ; call BIOS
+    jmp print_string
+.done:
+    ret
+
+welcome_message:
+    db 'Hello, real mode!', 0
+
+pm_message:
+    db 'Hello, protected mode!', 0
+
+CODE_SEG equ gdt_code - gdt_start
+DATA_SEG equ gdt_data - gdt_start
+
+	times 510 - ($-$$) db 0
+	dw 0xAA55
