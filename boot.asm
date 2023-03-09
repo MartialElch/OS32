@@ -1,85 +1,155 @@
-[ORG 0x7c00]
-BITS 16
+;boot.asm
+[ORG 0x7C00]
+	xor ax, ax
+	mov ds, ax
+	mov ss, ax
+	mov sp, 0x9C00
 
+	mov si, msg_load	; print message
+	call sprint
 
-start:
-    ; Set up the stack pointer
-    mov sp, 0x7c00
+	call read_floppy
 
-    ; Clear the screen
-    xor ax, ax
-    mov ds, ax
-    mov es, ax
+	mov si, msg_prot	; print message
+	call sprint
 
-    mov si, welcome_message
-    call print_string
+	cli					; no interrupt
+	push ds				; save real mode
+	lidt [idtr]			; load idt register
+	lgdt [gdtr]			; load gdt register
 
-    ; Enable protected mode
-    cli
-    lgdt [gdt_descriptor]
-    mov eax, cr0
-    or eax, 0x1
-    mov cr0, eax
-    jmp CODE_SEG:init_pm
+	call reprogram_pic
 
-init_pm:
-    mov ax, DATA_SEG
-    mov ds, ax
-    mov es, ax
-    mov ss, ax
-    mov sp, 0x9000
-    jmp start_pm
+	mov bl, 0xa2
 
-start_pm:
-    mov si, pm_message
-    call print_string
-    cli
-    hlt
-    jmp $
+	mov eax, cr0		; set PE bit of CR0
+	or  al, 0x01
+	mov cr0, eax
+	jmp codesel:go_pm
 
-print_string:
-    lodsb
-    or al, al
-    jz .done
-    mov ah, 0x0E ; BIOS teletype function
-    int 0x10     ; call BIOS
-    jmp print_string
-.done:
-    ret
+;--------------------
+bits 32
+go_pm:
+	mov ax, datasel			; set data selector
+	mov ds, ax
+	mov es, ax
+	mov ax, videosel		; set videoselector
+	mov gs, ax
 
-; Define the global descriptor table
-gdt_start:
-    dd 0x00000000 ; Null segment descriptor
-    dd 0
-gdt_code:
-    ; Code segment descriptor, base=0x00000000, limit=0xffffffff, execute/read, non-system segment, 32-bit code
-    dd 0xffff
-    dd 0x0000
-    db 0x00
-    db 0x9a
-    db 0xcf
-    db 0x00
-gdt_data:
-    ; Data segment descriptor, base=0x00000000, limit=0xffffffff, read/write, non-system segment
-    dd 0xffff
-    dd 0x0000
-    db 0x00
-    db 0x92
-    db 0xcf
-    db 0x00
+	cli
+	hlt
+
+bits 16
+
+;------------------------------------
+sprint:
+	mov ah, 0x0E		; set color
+	lodsb			; read next byte
+	cmp al, 0		; end if 0
+	jz sprint_exit
+	int 0x10		; write char
+	jmp sprint		; next
+sprint_exit:
+	ret
+
+;--------------------
+read_floppy:
+	mov ah, 0x00		; reset floppy controller
+	int 0x13		; execute command
+	jc error
+
+	mov ax, 0x1000		; set buffer address
+	mov es, ax
+	mov bx, 0x00
+
+read_sector:
+	mov ah, 0x02		; read data from floppy
+	mov al, 0x20		; number of sectors to read
+	mov ch, 0x00		; track  = 1
+	mov cl, 0x02		; sector = 2
+	mov dh, 0x00		; head   = 1
+	int 0x13		; execute command
+	jc error
+
+read_done:
+	ret
+
+;--------------------
+reprogram_pic:
+	mov	al,0x11		; initialization sequence
+	out	0x20,al		; send it to 8259A-1
+	out	0xA0,al		; and to 8259A-2
+
+	mov	al,0x20		; start of hardware int's (0x20)
+	out	0x21,al
+
+	mov	al,0x28		; start of hardware int's 2 (0x28)
+	out	0xA1,al
+
+	mov	al,0x04		; 8259-1 is master
+	out	0x21,al
+
+	mov	al,0x02		; 8259-2 is slave
+	out	0xA1,al
+
+	mov	al,0x01		; 8086 mode for both
+	out	0x21,al
+	out	0xA1,al
+
+	mov	al,0xFF		; mask off all interrupts for now
+	out	0xA1,al
+
+	mov	al,0xB1		; mask all irq's but irq2 which
+	out	0x21,al		; is cascaded
+	ret
+
+;--------------------
+error:
+	mov si, msg_err
+	cli
+	hlt
+
+;--------------------
+idtr:
+	dw gdt + 0x18 - 1		; IDT limit=0
+	dd gdt + 0x10			; IDT base=0
+gdtr:
+	dw gdt_end - gdt - 1	; length of gdt
+	dd gdt					; base address of gdt
+
+gdt:
+nullsel equ $-gdt			; 0x00 Null Descriptor
+	dd 0x00000000
+	dd 0x00000000
+codesel equ $-gdt			; 0x08 Code Descriptor
+	dw 0xffff				; limit 4Gb
+	dw 0x0000				; base 0000:0000
+	db 0x00
+	db 0x9a
+	db 0xcf
+	db 0x00
+datasel equ $-gdt			; 0x10
+	dw 0xffff
+	dw 0x0000
+	db 0x00
+	db 0x92
+	db 0xcf
+	db 0x00
+videosel equ $-gdt			; 0x18 Video Descriptor
+	dw 39999				; limit 80*25*2-1
+	dw 0x8000				; base 0xb8000
+	db 0x0b
+	db 0x92					; present, ring 0, data, expand-up, writeable
+	db 0x00
+	db 0x00
 gdt_end:
-gdt_descriptor:
-    dw gdt_end - gdt_start - 1
-    dd gdt_start
 
-welcome_message:
-    db 'Hello, real mode!', 0
+;------------------------------------
+msg_load	db 'loading kernel', 13, 10, 0
+msg_prot	db 'go protected mode', 13, 10, 0
+msg_err		db 'ERROR', 13, 10, 0
 
-pm_message:
-    db 'Hello, protected mode!', 0
-
-CODE_SEG equ gdt_code - gdt_start
-DATA_SEG equ gdt_data - gdt_start
-
-	times 510 - ($-$$) db 0
-	dw 0xAA55
+	times 510-($-$$) db 0
+	db 0x55
+	db 0xAA
+;------------------------------------
