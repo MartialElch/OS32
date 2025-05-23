@@ -1,0 +1,5 @@
+boot
+kernel.bin
+boot.flp
+*.o
+*.lst
